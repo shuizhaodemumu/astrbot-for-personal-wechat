@@ -1,0 +1,2 @@
+# AstrBot supplies this dependency in the tested installation.
+aiohttp>=3.9,<4

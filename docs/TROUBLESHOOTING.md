@@ -1,0 +1,31 @@
+# 故障排查
+
+按“微信登录 → 桥接接收 → AstrBot 准入 → 模型 → 发送”分段检查，不要把所有无回复都判断为模型超时。
+
+| 现象 | 检查与处理 |
+| --- | --- |
+| `endpoint_unavailable` | 桥接服务没有启动或已停止。检查 `bash scripts/wx --json daemon status`，再启动服务 |
+| `login_poll_failed` / 二维码失效 | 查询对应登录操作状态。重新发起登录并使用新操作 ID 导出新二维码；不要重复扫旧图片 |
+| 扫码后仍离线 | 确认手机已点击登录确认，检查 `account status`；`auth attempts` 成功和账号在线都要验证 |
+| 群列表为空 | 确认测试号已经加入目标群；等待联系人/群元数据同步，再执行 `groups list` |
+| 插件没有加载 | 核对目录为 `data/plugins/astrbot_plugin_native_wechat/` 且含 `main.py`；检查启动日志中的导入或版本错误 |
+| 插件在线，但普通群消息不回复 | 这是预期行为。只有白名单群的明确 @文字消息会进入 AstrBot |
+| @全体、手打昵称、自己发消息不回复 | 使用另一个账号，在微信的成员选择器中选择 @测试号；不要用 @全体代替 |
+| 白名单群 @后不回复 | 检查真实群 ID、账号 ID、`mentions.self`、消息类型与时间；超过 5 分钟、启动前消息和历史回放被忽略 |
+| AstrBot 收到消息，但没调用模型 | 检查独立群配置中的模型 ID 和额外唤醒前缀。默认模型可能仍指向已经删除的提供商 |
+| 模型 401/403/429/503 或超时 | 在 AstrBot 单独测试提供商；检查密钥、访问权限、额度、限流和服务可用性。此类错误不等于微信掉线 |
+| `schemaCompatibility: unverified` / 待投影批次 | 上游对独立新资料的兼容状态。检查实际目标群消息是否产生 `message.committed`，不可仅凭登录成功宣布全功能可用 |
+| 回复延迟或发送被拒绝 | 检查模型耗时、原消息是否撤回、消息是否超过 5 分钟、上游发送回执；不确定时先查记录，避免重复提交 |
+| TUN/代理开启后连接异常 | 区分本机 `127.0.0.1:6174`、微信连接与模型服务。插件的本机 HTTP 客户端不读取环境代理，但系统 TUN 和 DNS 仍可能影响其他网络路径 |
+
+## 收集诊断信息
+
+```bash
+bash scripts/wx --json daemon status
+bash scripts/wx --account astrbot-test --json account status
+bash scripts/wx --json daemon logs
+```
+
+AstrBot 日志中的 `Native WeChat admitted one mentioned group message` 表示消息已通过本插件的准入检查。健康文件持续更新只说明轮询运行中。
+
+报问题时提供组件版本、脱敏错误文本和触发步骤。不要上传 API key、token、二维码、聊天内容、群成员资料、完整配置或账号数据库。不要通过关闭 TLS 校验、公开本机服务端口或反复群发来排障。

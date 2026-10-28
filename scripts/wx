@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+bridge_root="${WECHAT_BRIDGE_RUNTIME:-$project_root/.runtime}"
+exec node "$bridge_root/node_modules/@agent-wechat/cli/scripts/native-launcher.mjs" \
+  --server-config "$bridge_root/server.toml" \
+  --config "$bridge_root/client.toml" "$@"
