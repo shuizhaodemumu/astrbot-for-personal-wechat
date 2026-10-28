@@ -117,3 +117,9 @@ bash scripts/wx --account astrbot-test --json account status
 停用时先停止 AstrBot，再执行 `bash scripts/wx --json daemon stop`。升级前备份插件、AstrBot 配置和桥接私有目录；核对接口兼容后再替换插件文件并重启。不要把升级当作登录资料迁移工具。
 
 移除时，在 AstrBot 中删除对应平台和不再需要的独立群配置/路由，停止 AstrBot 后移走插件目录。运行数据和配置备份由操作者保管；安装脚本不会自动删除它们。
+
+## 0.2.0 升级与群人格设置
+
+备份现有插件目录，将 `main.py`、`metadata.yaml`、`requirements.txt` 和新增的 `_conf_schema.json` 一并复制到插件目录，然后重启 AstrBot 并刷新管理页面。运行配置和密钥不放入插件源码。
+
+在“插件 → AstrBot for Personal WeChat → 配置 → 微信群人格”中按群名选择人格。保留“切换人格时开始新对话”可避免旧上下文影响，旧会话仍保留。日常保存会自动重载插件。群名在启动或保存时刷新，暂时读取失败不影响既有绑定。详细步骤见 [README](../README.md#按群选择人格020)。

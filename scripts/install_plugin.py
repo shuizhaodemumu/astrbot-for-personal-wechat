@@ -70,7 +70,7 @@ def main():
             "AstrBot config changed during installation; stop AstrBot and retry"
         )
     target.mkdir(parents=True)
-    for name in ("main.py", "metadata.yaml", "requirements.txt"):
+    for name in ("main.py", "metadata.yaml", "requirements.txt", "_conf_schema.json"):
         shutil.copy2(project / name, target / name)
     temporary = config_path.with_suffix(".wechat.tmp")
     temporary.write_text(

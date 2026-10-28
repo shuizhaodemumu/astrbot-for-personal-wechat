@@ -1,0 +1,47 @@
+{
+  "groups": {
+    "description": "微信群人格",
+    "type": "template_list",
+    "hint": "自动列出已允许回复的群。选择人格后保存即可生效；群名在启动或保存时刷新。此处添加群不会扩大回复白名单。",
+    "default": [],
+    "templates": {
+      "group": {
+        "name": "微信群",
+        "display_item": "group_name",
+        "items": {
+          "group_name": {
+            "description": "群聊名称",
+            "type": "string",
+            "default": "",
+            "hint": "从微信读取，读取失败时保留原名称；只用于显示。"
+          },
+          "platform_id": {
+            "description": "平台 ID",
+            "type": "string",
+            "default": "",
+            "hint": "须与机器人平台配置一致，通常无需修改。"
+          },
+          "group_id": {
+            "description": "群 ID",
+            "type": "string",
+            "default": "",
+            "hint": "匹配群的固定标识，群改名不会影响绑定；须在平台允许群列表中。"
+          },
+          "persona_id": {
+            "description": "此群使用的人格",
+            "type": "string",
+            "default": "default",
+            "_special": "select_persona",
+            "hint": "从已创建的人格中选择。保存时同步群配置及当前会话的人格选择。"
+          },
+          "new_conversation_on_change": {
+            "description": "切换人格时开始新对话",
+            "type": "bool",
+            "default": true,
+            "hint": "推荐开启，保留旧会话记录，避免旧人格的上下文影响回答。关闭则继续使用原对话。"
+          }
+        }
+      }
+    }
+  }
+}

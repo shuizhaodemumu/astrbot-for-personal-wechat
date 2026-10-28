@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
-from astrbot.api import logger
+from astrbot.api import logger, sp
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import At, Plain
 from astrbot.api.platform import (
@@ -24,6 +24,7 @@ from astrbot.api.platform import (
     register_platform_adapter,
 )
 from astrbot.api.star import Star, register
+from astrbot.core.utils.session_lock import session_lock_manager
 
 
 class NativeWeChatEvent(AstrMessageEvent):
@@ -277,30 +278,175 @@ class NativeWeChatAdapter(Platform):
 
 
 @register(
-    "astrbot_plugin_native_wechat", "shuizhaodemumu", "本机微信指定群文字接入", "0.1.0"
+    "astrbot_plugin_native_wechat", "shuizhaodemumu", "本机微信指定群文字接入", "0.2.0"
 )
 class NativeWeChatPlugin(Star):
+    def __init__(self, context, config=None):
+        super().__init__(context, config)
+        self.config = config if config is not None else {}
+
     async def initialize(self):
-        """Create an isolated group profile once, preserving other platforms."""
+        """Discover allowed groups and apply their independently selected personas."""
         manager = self.context.astrbot_config_mgr
+        rules = self.config.setdefault("groups", [])
+        indexed = {}
+        for rule in rules:
+            key = (rule.get("platform_id"), rule.get("group_id"))
+            if key in indexed:
+                raise ValueError(f"Duplicate WeChat group setting: {key}")
+            indexed[key] = rule
+        original_rules = copy.deepcopy(rules)
         for platform in manager.default_conf.get("platform", []):
             if platform.get("type") != "native_wechat" or not platform.get("enable"):
                 continue
             for group in platform.get("allowed_groups", []):
                 origin = f"{platform['id']}:GroupMessage:{group}"
-                if manager.get_conf_info(origin)["id"] != "default":
+                profile_id = manager.get_conf_info(origin)["id"]
+                routes = manager.ucr.umop_to_conf_id
+                if (
+                    profile_id == "default"
+                    or routes.get(origin) != profile_id
+                    or any(k != origin and v == profile_id for k, v in routes.items())
+                ):
+                    profile = copy.deepcopy(dict(manager.get_conf(origin)))
+                    profile["provider_settings"]["wake_prefix"] = ""
+                    profile["provider_settings"]["streaming_response"] = False
+                    model = profile["agent_runner"]["config"]["model"]
+                    model["provider_id"] = platform["chat_provider_id"]
+                    model["fallback_provider_ids"] = []
+                    profile_id = await manager.create_conf(
+                        profile, name=f"微信 · {group}"
+                    )
+                    Path(manager.confs[profile_id].config_path).chmod(0o600)
+                    await manager.ucr.update_routing_data(
+                        {
+                            origin: profile_id,
+                            **{k: v for k, v in routes.items() if k != origin},
+                        }
+                    )
+                profile = manager.confs[profile_id]
+                runner = profile["agent_runner"]
+                if runner.get("runner_type", "local") != "local":
+                    logger.warning("Skipping non-local WeChat profile: %s", origin)
                     continue
-                profile = copy.deepcopy(dict(manager.default_conf))
-                profile["provider_settings"]["wake_prefix"] = ""
-                profile["provider_settings"]["streaming_response"] = False
-                model = profile["agent_runner"]["config"]["model"]
-                model["provider_id"] = platform["chat_provider_id"]
-                model["fallback_provider_ids"] = []
-                profile_id = await manager.create_conf(
-                    profile, name="微信指定群 @ 回复"
-                )
-                profile_path = Path(manager.confs[profile_id].config_path)
-                profile_path.chmod(0o600)
-                await manager.ucr.update_routing_data(
-                    {origin: profile_id, **manager.ucr.umop_to_conf_id}
-                )
+                persona_config = runner["config"].setdefault("persona", {})
+                key = (platform["id"], group)
+                rule = indexed.get(key)
+                if rule is None:
+                    rule = {
+                        "__template_key": "group",
+                        "platform_id": platform["id"],
+                        "group_id": group,
+                        "group_name": group,
+                        "persona_id": persona_config.get("persona_id", "default"),
+                        "new_conversation_on_change": True,
+                    }
+                    rules.append(rule)
+                    indexed[key] = rule
+                name = await self.fetch_group_name(platform, group)
+                if name:
+                    rule["group_name"] = name
+                name = rule.get("group_name") or group
+                if manager.get_conf_info(origin).get("name") != f"微信 · {name}":
+                    await manager.update_conf_info(profile_id, name=f"微信 · {name}")
+                await self.apply_group_persona(origin, profile, rule)
+        if rules != original_rules and hasattr(self.config, "save_config"):
+            self.config.save_config()
+
+    async def fetch_group_name(self, platform, group):
+        """Read a group label without changing membership or sending messages.
+
+        Args:
+            platform: Enabled local bridge platform configuration.
+            group: An already allowed group ID.
+
+        Returns:
+            The bridge label, or None if unavailable.
+        """
+        if platform.get("server_url", "").rstrip("/") != "http://127.0.0.1:6174":
+            return None
+        try:
+            token = Path(platform["token_file"]).read_text().strip()
+            url = (
+                "http://127.0.0.1:6174/v1/accounts/"
+                + quote(platform["account_id"], safe="")
+                + "/groups/"
+                + quote(group, safe="")
+            )
+            async with aiohttp.ClientSession(
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=aiohttp.ClientTimeout(total=3),
+                trust_env=False,
+            ) as client:
+                async with client.get(url, allow_redirects=False) as response:
+                    if response.status != 200:
+                        return None
+                    data = await response.json()
+                    if data.get("id") != group:
+                        return None
+                    name = data.get("displayName") or data.get("name")
+                    return name if isinstance(name, str) and name.strip() else None
+        except (TimeoutError, OSError, aiohttp.ClientError, ValueError):
+            logger.warning("Could not refresh WeChat group label: %s", group)
+            return None
+
+    async def apply_group_persona(self, origin, profile, rule):
+        """Apply a selection under the same lock used by incoming model requests.
+
+        Args:
+            origin: Exact platform and group session identity.
+            profile: The group's isolated AstrBot configuration.
+            rule: Persona selection and conversation-switch preference.
+        """
+        selected = rule.get("persona_id")
+        if not selected:
+            return
+        try:
+            await self.context.persona_manager.get_persona(selected)
+        except ValueError:
+            logger.warning(
+                "Unknown WeChat persona %r for %s; keeping current setting",
+                selected,
+                origin,
+            )
+            return
+        async with session_lock_manager.acquire_lock(origin):
+            conversations = self.context.conversation_manager
+            cid = await conversations.get_curr_conversation_id(origin)
+            conversation = (
+                await conversations.get_conversation(origin, cid) if cid else None
+            )
+            service = (
+                await sp.get_async("umo", origin, "session_service_config", {}) or {}
+            )
+            persona = profile["agent_runner"]["config"].setdefault("persona", {})
+            previous = (
+                service.get("persona_id")
+                or (conversation.persona_id if conversation else None)
+                or persona.get("persona_id", "default")
+            )
+            if previous != selected:
+                if rule.get("new_conversation_on_change", True):
+                    await conversations.new_conversation(
+                        origin,
+                        title=f"{rule.get('group_name') or origin} · {selected}",
+                        persona_id=selected,
+                    )
+                elif cid:
+                    await conversations.update_conversation(
+                        origin,
+                        conversation_id=cid,
+                        persona_id=selected,
+                    )
+            if persona.get("persona_id") != selected:
+                persona["persona_id"] = selected
+                profile.save_config()
+            if service.get("persona_id") and service["persona_id"] != selected:
+                service["persona_id"] = selected
+                await sp.put_async("umo", origin, "session_service_config", service)
+            logger.info(
+                "WeChat persona for %s (%s): %s",
+                rule.get("group_name"),
+                origin,
+                selected,
+            )
